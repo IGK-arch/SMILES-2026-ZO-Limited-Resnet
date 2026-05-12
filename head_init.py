@@ -1,37 +1,49 @@
-"""
-head_init.py — Final layer initialization (student-implemented).
-
-Students: Implement `init_last_layer` to control how the new classification
-head is initialized before fine-tuning begins. The skeleton below uses
-Kaiming uniform weights and zero bias — you are expected to experiment with
-alternatives (e.g. Xavier, orthogonal, small-scale random, learned bias init).
-"""
-
 import torch
 import torch.nn as nn
-
+import torchvision
+import torchvision.transforms as T
+from torch.utils.data import DataLoader
 
 def init_last_layer(layer: nn.Linear) -> None:
-    """Initialize the weights and bias of the final classification layer in-place.
-
-    This function is called once during model construction (see model.py).
-    Modify it to experiment with different initialization strategies and observe
-    their effect on the "initialized head" evaluation checkpoint.
-
-    Args:
-        layer: The ``nn.Linear`` layer that serves as the new CIFAR100 head.
-               Modifies the layer in-place; return value is ignored.
-
-    Student task:
-        Replace or extend the skeleton below. Some strategies to consider:
-          - ``nn.init.xavier_uniform_``  — preserves variance across layers
-          - ``nn.init.orthogonal_``      — encourages diverse feature directions
-          - Small-scale init (e.g. scale weights by 0.01) — conservative start
-          - Non-zero bias init           — useful when class priors are known
     """
-    # -------------------------------------------------------------------------
-    # STUDENT: Replace or extend the initialization below.
-    # -------------------------------------------------------------------------
-    nn.init.kaiming_uniform_(layer.weight, nonlinearity="relu")
+    Weight Imprinting: Initialization of head weights using average features (centroids).
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # 1. We take a pure ResNet18 to extract the features
+    backbone = torchvision.models.resnet18(weights="IMAGENET1K_V1")
+    backbone.fc = nn.Identity()
+    backbone.to(device)
+    backbone.eval()
+
+    # 2. We load the training data (without heavy augmentation for the purity of the signs)
+    transform = T.Compose([T.Resize(224), T.ToTensor(), 
+                           T.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761))])
+    dataset = torchvision.datasets.CIFAR100(root='./data', train=True, download=True, transform=transform)
+    loader = DataLoader(dataset, batch_size=128, shuffle=False, num_workers=2)
+
+    features_sum = torch.zeros(100, 512).to(device)
+    counts = torch.zeros(100).to(device)
+
+    print("Computing centroids for Imprinting...")
+    with torch.no_grad():
+        # We calculate the sum of features for each class (we use the first 5000 images for speed)
+        for i, (inputs, targets) in enumerate(loader):
+            if i > 40: break # This is enough for excellent initialization.
+            feats = backbone(inputs.to(device))
+            for f, t in zip(feats, targets):
+                features_sum[t] += f
+                counts[t] += 1
+
+    # 3. We calculate the average and normalize
+    for i in range(100):
+        if counts[i] > 0:
+            features_sum[i] /= counts[i]
+    
+    # Normalization of weights (Cosine Similarity works better in transfer learning)
+    features_sum = torch.nn.functional.normalize(features_sum, dim=1)
+    
+    # 4. Copy it to the layer
+    layer.weight.data.copy_(features_sum)
     nn.init.zeros_(layer.bias)
-    # -------------------------------------------------------------------------
+    print("Head initialized with imprinted weights.")

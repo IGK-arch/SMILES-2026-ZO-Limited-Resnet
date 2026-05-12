@@ -14,17 +14,19 @@ def get_train_dataset_loader(
     assert USE_TRAIN_SUBSET_ONLY, "USE_TRAIN_SUBSET_ONLY must be True"
     train_dataset = datasets.CIFAR100(
         root=data_dir,
-        train=USE_TRAIN_SUBSET_ONLY, # True
+        train=USE_TRAIN_SUBSET_ONLY,
         download=True,
         transform=get_transforms(train=True),
     )
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=True, 
         num_workers=0,
         pin_memory=True,
-        generator=generator_train
+        generator=generator_train,
+        drop_last=True
     )
 
     return train_dataset, train_loader
